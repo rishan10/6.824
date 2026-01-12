@@ -8,6 +8,7 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -16,13 +17,13 @@ const (
 )
 
 type Coordinator struct {
-	// Your definitions here.
 	MapTasks    []Task // immutable slice of MapTasks
 	ReduceTasks []Task // immutable slice of ReduceTasks
 
-	IdleTasks    []int             // int corresponds to the index of the task in the Tasks slice
-	PendingTasks map[int]time.Time // map[taskID]Processingtime
-	mu           sync.RWMutex      // mutex for concurrent access to datastructures
+	IdleTasks          []int             // int corresponds to the index of the task in the Tasks slice
+	PendingTasks       map[int]time.Time // map[taskID]Processingtime
+	mu                 sync.RWMutex      // mutex for concurrent access to datastructures
+	reduceTasksStarted atomic.Bool       // whether the reduce tasks have been started
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -44,7 +45,13 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		return nil
 	}
 
-	task := c.MapTasks[taskId]
+	var task Task
+	if c.reduceTasksStarted.Load() {
+		task = c.ReduceTasks[taskId]
+	} else {
+		task = c.MapTasks[taskId]
+	}
+
 	c.addPendingTask(taskId)
 	reply.Task = &task
 	return nil
@@ -84,7 +91,23 @@ func (c *Coordinator) Done() bool {
 	defer c.mu.RUnlock()
 
 	if len(c.PendingTasks) == 0 && len(c.IdleTasks) == 0 {
-		ret = true
+		if c.reduceTasksStarted.Load() {
+			fmt.Println("All tasks completed")
+			ret = true
+		} else {
+			fmt.Println("All map tasks completed, starting reduce tasks")
+			c.reduceTasksStarted.Store(true)
+
+			// start in a new goroutine to allow the Done() method to free the lock
+			// this should only be called once, since
+			go func() {
+				taskIds := []int{}
+				for _, reduceTask := range c.ReduceTasks {
+					taskIds = append(taskIds, reduceTask.(*ReduceTask).ReduceTaskID)
+				}
+				c.addIdleTasks(taskIds)
+			}()
+		}
 	}
 
 	return ret
@@ -107,7 +130,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 			for _, taskID := range expiredTasks {
 				fmt.Println("Moving expired task", taskID, "back to idle")
 				c.removePendingTask(taskID)
-				c.addIdleTask(taskID)
+				c.addIdleTasks([]int{taskID})
 			}
 		}
 	}()
@@ -123,7 +146,7 @@ func (c *Coordinator) initMapTasks(files []string, nReduce int) {
 			NReduce:     nReduce,
 			MapTaskID:   i,
 		})
-		c.addIdleTask(i)
+		c.addIdleTasks([]int{i})
 	}
 }
 
@@ -137,11 +160,14 @@ func (c *Coordinator) initReduceTasks(nReduce int) {
 	// don't add any idle tasks when initializing reduce tasks
 	// we need to wait for the map tasks to complete before we can start the reduce tasks
 }
-func (c *Coordinator) addIdleTask(taskID int) {
+
+func (c *Coordinator) addIdleTasks(taskIDs []int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.IdleTasks = append(c.IdleTasks, taskID)
+	for _, taskID := range taskIDs {
+		c.IdleTasks = append(c.IdleTasks, taskID)
+	}
 }
 
 func (c *Coordinator) removeIdleTask() int {
