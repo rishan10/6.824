@@ -12,21 +12,6 @@ import (
 	"strconv"
 )
 
-//
-// example to show how to declare the arguments
-// and reply for an RPC.
-//
-
-type ExampleArgs struct {
-	X int
-}
-
-type ExampleReply struct {
-	Y int
-}
-
-// Add your RPC definitions here.
-
 // TASKS
 
 type GetTaskArgs struct {
@@ -62,9 +47,6 @@ func (w *WaitTask) IsMrTask() {}
 
 type CompleteTaskArgs struct {
 	TaskID int
-	// For Map tasks, this is used to report the intermediate files to the coordinator.
-	// For Reduce tasks, this is empty.
-	ReduceTaskFileInfos []ReduceTask
 }
 
 type CompleteTaskReply struct{}

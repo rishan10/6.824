@@ -18,23 +18,14 @@ const (
 )
 
 type Coordinator struct {
-	MapTasks    []Task // immutable slice of MapTasks
-	ReduceTasks []Task // immutable slice of ReduceTasks
+	MapTasks    []Task
+	ReduceTasks []Task
 
-	IdleTasks          []int             // int corresponds to the index of the task in the Tasks slice
-	PendingTasks       map[int]time.Time // map[taskID]Processingtime
-	mu                 sync.RWMutex      // mutex for concurrent access to datastructures
-	reduceTasksStarted atomic.Bool       // whether the reduce tasks have been started
-}
+	IdleTasks    []int
+	PendingTasks map[int]time.Time
 
-// Your code here -- RPC handlers for the worker to call.
-
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
+	mu                 sync.RWMutex
+	reduceTasksStarted atomic.Bool
 }
 
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
@@ -161,7 +152,11 @@ func (c *Coordinator) initReduceTasks(numFiles int, nReduce int) {
 		}
 
 		c.ReduceTasks = append(c.ReduceTasks, &ReduceTask{
-			ReduceTaskID:               i,
+			ReduceTaskID: i,
+			// It's cleaner to pass intermediate file paths that were actually created by map tasks to the CompleteTask RPC
+			// instead of hardcoding them here. Some of these files might not exist if the map task doesn't create them (either because
+			// it failed or because the no key was hashed to that reduce task number). Due to time constraints, I opted to just hardcode the files upfrontand filter out
+			// files that don't exist in the worker implementation.
 			AbsIntermediateKVFilePaths: filePaths,
 		})
 	}

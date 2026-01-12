@@ -110,6 +110,11 @@ func handleReduceTask(task *ReduceTask, reducef func(string, []string) string) {
 	taskId := task.ReduceTaskID
 
 	for _, filename := range files {
+		// if file does not exist, skip it
+		if _, err := os.Stat(filename); os.IsNotExist(err) {
+			continue
+		}
+
 		file, err := os.Open(filename)
 		if err != nil {
 			fmt.Println("error opening file", filename, err)
@@ -120,6 +125,11 @@ func handleReduceTask(task *ReduceTask, reducef func(string, []string) string) {
 		dec.Decode(&file_kvs)
 
 		intermediate = append(intermediate, file_kvs...)
+	}
+
+	if len(intermediate) == 0 {
+		fmt.Println("No intermediate files found for reduce task", taskId, "existing early")
+		CompleteTask(taskId)
 	}
 
 	sort.Sort(ByKey(intermediate))
@@ -155,33 +165,6 @@ func handleReduceTask(task *ReduceTask, reducef func(string, []string) string) {
 
 	// call back to the coordinator to mark the task as complete
 	CompleteTask(taskId)
-}
-
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
-	}
 }
 
 func GetTask() *Task {
