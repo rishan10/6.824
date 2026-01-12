@@ -6,8 +6,11 @@ package mr
 // remember to capitalize all names.
 //
 
-import "os"
-import "strconv"
+import (
+	"encoding/gob"
+	"os"
+	"strconv"
+)
 
 //
 // example to show how to declare the arguments
@@ -24,6 +27,43 @@ type ExampleReply struct {
 
 // Add your RPC definitions here.
 
+// TASKS
+
+type GetTaskArgs struct {
+}
+
+type GetTaskReply struct {
+	Task *Task
+}
+
+type Task interface {
+	IsMrTask()
+}
+
+type MapTask struct {
+	AbsFilePath string
+	NReduce     int
+	MapTaskID   int
+}
+
+func (m *MapTask) IsMrTask() {}
+
+type ReduceTask struct {
+	AbsIntermediateKVFilePaths []string
+}
+
+func (r *ReduceTask) IsMrTask() {}
+
+type WaitTask struct {
+}
+
+func (w *WaitTask) IsMrTask() {}
+
+type CompleteTaskArgs struct {
+	TaskID int
+}
+
+type CompleteTaskReply struct{}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
@@ -33,4 +73,10 @@ func coordinatorSock() string {
 	s := "/var/tmp/824-mr-"
 	s += strconv.Itoa(os.Getuid())
 	return s
+}
+
+func init() {
+	gob.Register(&MapTask{})
+	gob.Register(&ReduceTask{})
+	gob.Register(&WaitTask{})
 }
