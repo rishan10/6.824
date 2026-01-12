@@ -50,6 +50,7 @@ func (m *MapTask) IsMrTask() {}
 
 type ReduceTask struct {
 	AbsIntermediateKVFilePaths []string
+	ReduceTaskID               int
 }
 
 func (r *ReduceTask) IsMrTask() {}
@@ -61,6 +62,9 @@ func (w *WaitTask) IsMrTask() {}
 
 type CompleteTaskArgs struct {
 	TaskID int
+	// For Map tasks, this is used to report the intermediate files to the coordinator.
+	// For Reduce tasks, this is empty.
+	ReduceTaskFileInfos []ReduceTask
 }
 
 type CompleteTaskReply struct{}
