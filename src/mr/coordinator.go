@@ -17,7 +17,9 @@ const (
 
 type Coordinator struct {
 	// Your definitions here.
-	Tasks        []Task            // append only slice of Tasks
+	MapTasks    []Task // immutable slice of MapTasks
+	ReduceTasks []Task // immutable slice of ReduceTasks
+
 	IdleTasks    []int             // int corresponds to the index of the task in the Tasks slice
 	PendingTasks map[int]time.Time // map[taskID]Processingtime
 	mu           sync.RWMutex      // mutex for concurrent access to datastructures
@@ -42,7 +44,7 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		return nil
 	}
 
-	task := c.Tasks[taskId]
+	task := c.MapTasks[taskId]
 	c.addPendingTask(taskId)
 	reply.Task = &task
 	return nil
@@ -50,6 +52,11 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 
 func (c *Coordinator) CompleteTask(args *CompleteTaskArgs, reply *CompleteTaskReply) error {
 	c.removePendingTask(args.TaskID)
+
+	if args.ReduceTaskFileInfos != nil {
+		c.updateReduceTaskFiles(args.TaskID, args.ReduceTaskFileInfos)
+	}
+
 	return nil
 }
 
@@ -90,6 +97,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	c.initMapTasks(files, nReduce)
+	c.initReduceTasks(nReduce)
 
 	// start a cleanup thread to move expired tasks back to idle
 	go func() {
@@ -110,7 +118,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 func (c *Coordinator) initMapTasks(files []string, nReduce int) {
 	for i, file := range files {
-		c.Tasks = append(c.Tasks, &MapTask{
+		c.MapTasks = append(c.MapTasks, &MapTask{
 			AbsFilePath: file,
 			NReduce:     nReduce,
 			MapTaskID:   i,
@@ -119,6 +127,16 @@ func (c *Coordinator) initMapTasks(files []string, nReduce int) {
 	}
 }
 
+func (c *Coordinator) initReduceTasks(nReduce int) {
+	for i := 0; i < nReduce; i++ {
+		c.ReduceTasks = append(c.ReduceTasks, &ReduceTask{
+			ReduceTaskID:               i,
+			AbsIntermediateKVFilePaths: []string{},
+		})
+	}
+	// don't add any idle tasks when initializing reduce tasks
+	// we need to wait for the map tasks to complete before we can start the reduce tasks
+}
 func (c *Coordinator) addIdleTask(taskID int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -169,4 +187,36 @@ func (c *Coordinator) getExpiredTasks() []int {
 		}
 	}
 	return expiredTasks
+}
+
+func (c *Coordinator) updateReduceTaskFiles(taskID int, reduceIntermediateTaskFileInfos []ReduceTask) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	tmp1 := make(map[string]bool)
+	for _, reduceIntermediateTaskFileInfo := range reduceIntermediateTaskFileInfos {
+		for _, filePath := range reduceIntermediateTaskFileInfo.AbsIntermediateKVFilePaths {
+			tmp1[filePath] = true
+		}
+	}
+
+	task := c.ReduceTasks[taskID]
+	reduceTask := task.(*ReduceTask)
+	tmp2 := make(map[string]bool)
+
+	for _, filePath := range reduceTask.AbsIntermediateKVFilePaths {
+		tmp2[filePath] = true
+	}
+
+	//merge maps
+	for filePath := range tmp1 {
+		if _, ok := tmp2[filePath]; !ok {
+			tmp2[filePath] = true
+		}
+	}
+
+	reduceTask.AbsIntermediateKVFilePaths = []string{}
+	for filePath := range tmp2 {
+		reduceTask.AbsIntermediateKVFilePaths = append(reduceTask.AbsIntermediateKVFilePaths, filePath)
+	}
 }
