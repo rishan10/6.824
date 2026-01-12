@@ -46,7 +46,8 @@ type WaitTask struct {
 func (w *WaitTask) IsMrTask() {}
 
 type CompleteTaskArgs struct {
-	TaskID int
+	TaskID             int
+	CreatedReduceTasks []*ReduceTask
 }
 
 type CompleteTaskReply struct{}

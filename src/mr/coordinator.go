@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
-	"path"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,6 +51,34 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 func (c *Coordinator) CompleteTask(args *CompleteTaskArgs, reply *CompleteTaskReply) error {
 	c.removePendingTask(args.TaskID)
 
+	// If this is a map task completion, aggregate the reported intermediate file paths
+	if len(args.CreatedReduceTasks) > 0 {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+
+		for _, reportedTask := range args.CreatedReduceTasks {
+			reduceTaskID := reportedTask.ReduceTaskID
+			// Find the corresponding ReduceTask in c.ReduceTasks
+			for _, reduceTask := range c.ReduceTasks {
+				if rt := reduceTask.(*ReduceTask); rt.ReduceTaskID == reduceTaskID {
+					// Append the file paths from the reported task
+					rt.AbsIntermediateKVFilePaths = append(rt.AbsIntermediateKVFilePaths, reportedTask.AbsIntermediateKVFilePaths...)
+					// Deduplicate file paths for this reduce task before releasing the lock
+					seen := make(map[string]bool)
+					uniquePaths := []string{}
+					for _, path := range rt.AbsIntermediateKVFilePaths {
+						if !seen[path] {
+							seen[path] = true
+							uniquePaths = append(uniquePaths, path)
+						}
+					}
+					rt.AbsIntermediateKVFilePaths = uniquePaths
+					break
+				}
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -89,10 +116,16 @@ func (c *Coordinator) Done() bool {
 			// start in a new goroutine to allow the Done() method to free the lock
 			// this should only be called once, since
 			go func() {
+				c.mu.RLock()
 				taskIds := []int{}
 				for _, reduceTask := range c.ReduceTasks {
+					if len(reduceTask.(*ReduceTask).AbsIntermediateKVFilePaths) == 0 {
+						continue
+					}
 					taskIds = append(taskIds, reduceTask.(*ReduceTask).ReduceTaskID)
 				}
+				c.mu.RUnlock()
+
 				c.addIdleTasks(taskIds)
 			}()
 		}
@@ -108,7 +141,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	c.initMapTasks(files, nReduce)
-	c.initReduceTasks(len(files), nReduce)
+	c.initReduceTasks(nReduce)
 
 	// start a cleanup thread to move expired tasks back to idle
 	go func() {
@@ -138,26 +171,11 @@ func (c *Coordinator) initMapTasks(files []string, nReduce int) {
 	}
 }
 
-func (c *Coordinator) initReduceTasks(numFiles int, nReduce int) {
+func (c *Coordinator) initReduceTasks(nReduce int) {
 	for i := 0; i < nReduce; i++ {
-		curDir, err := os.Getwd()
-		if err != nil {
-			log.Fatal("Error getting current directory:", err)
-		}
-
-		filePaths := []string{}
-		for j := 0; j < numFiles; j++ {
-			intermediateFilePath := path.Join(curDir, fmt.Sprintf("mr-%d-%d", j, i))
-			filePaths = append(filePaths, intermediateFilePath)
-		}
-
 		c.ReduceTasks = append(c.ReduceTasks, &ReduceTask{
-			ReduceTaskID: i,
-			// It's cleaner to pass intermediate file paths that were actually created by map tasks to the CompleteTask RPC
-			// instead of hardcoding them here. Some of these files might not exist if the map task doesn't create them (either because
-			// it failed or because the no key was hashed to that reduce task number). Due to time constraints, I opted to just hardcode the files upfrontand filter out
-			// files that don't exist in the worker implementation.
-			AbsIntermediateKVFilePaths: filePaths,
+			ReduceTaskID:               i,
+			AbsIntermediateKVFilePaths: []string{},
 		})
 	}
 }

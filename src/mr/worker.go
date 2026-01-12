@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/rpc"
 	"os"
+	"path/filepath"
 	"sort"
 	"time"
 )
@@ -84,6 +85,12 @@ func handleMapTask(task *MapTask, mapf func(string, string) []KeyValue) {
 		intermediate_files[reduce_index] = append(intermediate_files[reduce_index], kv)
 	}
 
+	curDir, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("Error getting current directory: %v", err)
+	}
+
+	createdReduceTasks := []*ReduceTask{}
 	for reduce_index, kva_pairs := range intermediate_files {
 		filename := fmt.Sprintf("mr-%d-%d", task.MapTaskID, reduce_index)
 		tmpFile, err := ioutil.TempFile("", "")
@@ -97,11 +104,18 @@ func handleMapTask(task *MapTask, mapf func(string, string) []KeyValue) {
 		enc.Encode(kva_pairs)
 
 		os.Rename(tmpFile.Name(), filename)
+
+		// Get absolute path for the created file
+		absFilePath := filepath.Join(curDir, filename)
+		createdReduceTasks = append(createdReduceTasks, &ReduceTask{
+			ReduceTaskID:               reduce_index,
+			AbsIntermediateKVFilePaths: []string{absFilePath},
+		})
 	}
 
 	taskId := task.MapTaskID
 	// call back to the coordinator to mark the task as complete
-	CompleteTask(taskId)
+	CompleteMapTask(taskId, createdReduceTasks)
 }
 
 func handleReduceTask(task *ReduceTask, reducef func(string, []string) string) {
@@ -110,11 +124,6 @@ func handleReduceTask(task *ReduceTask, reducef func(string, []string) string) {
 	taskId := task.ReduceTaskID
 
 	for _, filename := range files {
-		// if file does not exist, skip it
-		if _, err := os.Stat(filename); os.IsNotExist(err) {
-			continue
-		}
-
 		file, err := os.Open(filename)
 		if err != nil {
 			fmt.Println("error opening file", filename, err)
@@ -128,8 +137,10 @@ func handleReduceTask(task *ReduceTask, reducef func(string, []string) string) {
 	}
 
 	if len(intermediate) == 0 {
+		// This should not happen since we wont put empty tasks in the idle queue, but added a check for debugging
 		fmt.Println("No intermediate files found for reduce task", taskId, "existing early")
-		CompleteTask(taskId)
+		CompleteReduceTask(taskId)
+		return
 	}
 
 	sort.Sort(ByKey(intermediate))
@@ -164,7 +175,7 @@ func handleReduceTask(task *ReduceTask, reducef func(string, []string) string) {
 	os.Rename(tmpFile.Name(), oname)
 
 	// call back to the coordinator to mark the task as complete
-	CompleteTask(taskId)
+	CompleteReduceTask(taskId)
 }
 
 func GetTask() *Task {
@@ -177,14 +188,30 @@ func GetTask() *Task {
 	return nil
 }
 
-func CompleteTask(taskId int) {
-	args := CompleteTaskArgs{TaskID: taskId}
+func CompleteMapTask(taskId int, createdReduceTasks []*ReduceTask) {
+	args := CompleteTaskArgs{
+		TaskID:             taskId,
+		CreatedReduceTasks: createdReduceTasks,
+	}
 	reply := CompleteTaskReply{}
 	ok := call("Coordinator.CompleteTask", &args, &reply)
 	if ok {
 		return
 	}
-	fmt.Println("Error completing task", taskId)
+	fmt.Println("Error completing map task", taskId)
+}
+
+func CompleteReduceTask(taskId int) {
+	args := CompleteTaskArgs{
+		TaskID:             taskId,
+		CreatedReduceTasks: nil,
+	}
+	reply := CompleteTaskReply{}
+	ok := call("Coordinator.CompleteTask", &args, &reply)
+	if ok {
+		return
+	}
+	fmt.Println("Error completing reduce task", taskId)
 }
 
 // send an RPC request to the coordinator, wait for the response.
