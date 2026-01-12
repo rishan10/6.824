@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"path"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -59,10 +60,6 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 
 func (c *Coordinator) CompleteTask(args *CompleteTaskArgs, reply *CompleteTaskReply) error {
 	c.removePendingTask(args.TaskID)
-
-	if args.ReduceTaskFileInfos != nil {
-		c.updateReduceTaskFiles(args.TaskID, args.ReduceTaskFileInfos)
-	}
 
 	return nil
 }
@@ -120,7 +117,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 
 	c.initMapTasks(files, nReduce)
-	c.initReduceTasks(nReduce)
+	c.initReduceTasks(len(files), nReduce)
 
 	// start a cleanup thread to move expired tasks back to idle
 	go func() {
@@ -150,15 +147,24 @@ func (c *Coordinator) initMapTasks(files []string, nReduce int) {
 	}
 }
 
-func (c *Coordinator) initReduceTasks(nReduce int) {
+func (c *Coordinator) initReduceTasks(numFiles int, nReduce int) {
 	for i := 0; i < nReduce; i++ {
+		curDir, err := os.Getwd()
+		if err != nil {
+			log.Fatal("Error getting current directory:", err)
+		}
+
+		filePaths := []string{}
+		for j := 0; j < numFiles; j++ {
+			intermediateFilePath := path.Join(curDir, fmt.Sprintf("mr-%d-%d", j, i))
+			filePaths = append(filePaths, intermediateFilePath)
+		}
+
 		c.ReduceTasks = append(c.ReduceTasks, &ReduceTask{
 			ReduceTaskID:               i,
-			AbsIntermediateKVFilePaths: []string{},
+			AbsIntermediateKVFilePaths: filePaths,
 		})
 	}
-	// don't add any idle tasks when initializing reduce tasks
-	// we need to wait for the map tasks to complete before we can start the reduce tasks
 }
 
 func (c *Coordinator) addIdleTasks(taskIDs []int) {
@@ -213,36 +219,4 @@ func (c *Coordinator) getExpiredTasks() []int {
 		}
 	}
 	return expiredTasks
-}
-
-func (c *Coordinator) updateReduceTaskFiles(taskID int, reduceIntermediateTaskFileInfos []ReduceTask) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	tmp1 := make(map[string]bool)
-	for _, reduceIntermediateTaskFileInfo := range reduceIntermediateTaskFileInfos {
-		for _, filePath := range reduceIntermediateTaskFileInfo.AbsIntermediateKVFilePaths {
-			tmp1[filePath] = true
-		}
-	}
-
-	task := c.ReduceTasks[taskID]
-	reduceTask := task.(*ReduceTask)
-	tmp2 := make(map[string]bool)
-
-	for _, filePath := range reduceTask.AbsIntermediateKVFilePaths {
-		tmp2[filePath] = true
-	}
-
-	//merge maps
-	for filePath := range tmp1 {
-		if _, ok := tmp2[filePath]; !ok {
-			tmp2[filePath] = true
-		}
-	}
-
-	reduceTask.AbsIntermediateKVFilePaths = []string{}
-	for filePath := range tmp2 {
-		reduceTask.AbsIntermediateKVFilePaths = append(reduceTask.AbsIntermediateKVFilePaths, filePath)
-	}
 }
