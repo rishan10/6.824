@@ -49,13 +49,13 @@ workerLoop:
 
 		switch v := (*task).(type) {
 		case *MapTask:
-			fmt.Println("Handling map task")
+			// fmt.Println("Handling map task")
 			handleMapTask(v, mapf)
 		case *ReduceTask:
-			fmt.Println("Handling reduce task")
+			// fmt.Println("Handling reduce task")
 			handleReduceTask(v, reducef)
 		case *WaitTask:
-			fmt.Println("Waiting for task")
+			// fmt.Println("Waiting for task")
 			time.Sleep(100 * time.Millisecond)
 		default:
 			fmt.Println("Unknown task type")
@@ -84,22 +84,24 @@ func handleMapTask(task *MapTask, mapf func(string, string) []KeyValue) {
 		intermediate_files[reduce_index] = append(intermediate_files[reduce_index], kv)
 	}
 
-	reduceTaskFileInfos := make(map[int][]string)
-
 	for reduce_index, kva_pairs := range intermediate_files {
-		filename := fmt.Sprintf("intermediate-%d-%d", task.MapTaskID, reduce_index)
-		file, err := os.Create(filename)
+		filename := fmt.Sprintf("mr-%d-%d", task.MapTaskID, reduce_index)
+		tmpFile, err := ioutil.TempFile("", "")
+		defer os.Remove(tmpFile.Name())
+
 		if err != nil {
-			log.Fatalf("cannot create %v", filename)
+			log.Fatalf("cannot create temp file")
 		}
-		enc := json.NewEncoder(file)
+
+		enc := json.NewEncoder(tmpFile)
 		enc.Encode(kva_pairs)
-		reduceTaskFileInfos[reduce_index] = append(reduceTaskFileInfos[reduce_index], filename)
+
+		os.Rename(tmpFile.Name(), filename)
 	}
 
 	taskId := task.MapTaskID
 	// call back to the coordinator to mark the task as complete
-	CompleteMapTask(taskId, reduceTaskFileInfos)
+	CompleteTask(taskId)
 }
 
 func handleReduceTask(task *ReduceTask, reducef func(string, []string) string) {
@@ -110,7 +112,8 @@ func handleReduceTask(task *ReduceTask, reducef func(string, []string) string) {
 	for _, filename := range files {
 		file, err := os.Open(filename)
 		if err != nil {
-			log.Fatalf("cannot open %v", filename)
+			fmt.Println("error opening file", filename, err)
+			continue
 		}
 		dec := json.NewDecoder(file)
 		file_kvs := []KeyValue{}
@@ -122,7 +125,13 @@ func handleReduceTask(task *ReduceTask, reducef func(string, []string) string) {
 	sort.Sort(ByKey(intermediate))
 
 	oname := fmt.Sprintf("mr-out-%d", taskId)
-	ofile, _ := os.Create(oname)
+	tmpFile, err := ioutil.TempFile("", "")
+	if err != nil {
+		log.Fatalf("cannot create temp file")
+	}
+
+	defer os.Remove(tmpFile.Name())
+
 	i := 0
 	for i < len(intermediate) {
 		j := i + 1
@@ -136,15 +145,16 @@ func handleReduceTask(task *ReduceTask, reducef func(string, []string) string) {
 		output := reducef(intermediate[i].Key, values)
 
 		// this is the correct format for each line of Reduce output.
-		fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+		fmt.Fprintf(tmpFile, "%v %v\n", intermediate[i].Key, output)
 
 		i = j
 	}
 
-	ofile.Close()
+	tmpFile.Close()
+	os.Rename(tmpFile.Name(), oname)
 
 	// call back to the coordinator to mark the task as complete
-	CompleteReduceTask(taskId)
+	CompleteTask(taskId)
 }
 
 // example function to show how to make an RPC call to the coordinator.
@@ -184,23 +194,7 @@ func GetTask() *Task {
 	return nil
 }
 
-func CompleteMapTask(taskId int, reduceTaskFileInfos map[int][]string) {
-	// transform the infos into the RPC message struct
-	reduceTaskFileInfosMsg := []ReduceTask{}
-	for reduceIndex, filenames := range reduceTaskFileInfos {
-		reduceTaskFileInfosMsg = append(reduceTaskFileInfosMsg, ReduceTask{AbsIntermediateKVFilePaths: filenames, ReduceTaskID: reduceIndex})
-	}
-
-	args := CompleteTaskArgs{TaskID: taskId, ReduceTaskFileInfos: reduceTaskFileInfosMsg}
-	reply := CompleteTaskReply{}
-	ok := call("Coordinator.CompleteTask", &args, &reply)
-	if ok {
-		return
-	}
-	fmt.Println("Error completing task", taskId)
-}
-
-func CompleteReduceTask(taskId int) {
+func CompleteTask(taskId int) {
 	args := CompleteTaskArgs{TaskID: taskId}
 	reply := CompleteTaskReply{}
 	ok := call("Coordinator.CompleteTask", &args, &reply)
