@@ -20,7 +20,7 @@ type Coordinator struct {
 	Tasks        []Task            // append only slice of Tasks
 	IdleTasks    []int             // int corresponds to the index of the task in the Tasks slice
 	PendingTasks map[int]time.Time // map[taskID]Processingtime
-	mu           sync.RWMutex      // mutex for concurrent access to the IdleTasks and PendingTasks slice
+	mu           sync.RWMutex      // mutex for concurrent access to datastructures
 }
 
 // Your code here -- RPC handlers for the worker to call.
